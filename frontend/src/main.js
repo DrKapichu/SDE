@@ -126,7 +126,7 @@ function openGymPreview(gym) {
     ['Déposées par', gym['Déposées en salle par'] || '—'],
     ['Affiches', gym["Nombre d'affiches"] !== '' && gym["Nombre d'affiches"] !== undefined ? `${gym["Nombre d'affiches"]} (${gym['Format'] || '—'})` : '—'],
     ['Accord', gym['Accord'] || '—'],
-    ['Contacté le', gym['Contacté le'] || '—']
+    ['Places offertes', gym['Nombre de places offertes'] !== '' && gym['Nombre de places offertes'] !== undefined ? gym['Nombre de places offertes'] : '—']
   ];
 
   for (const [label, value] of fields) {

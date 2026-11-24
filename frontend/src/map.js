@@ -3,7 +3,7 @@ import 'leaflet/dist/leaflet.css';
 import { getGymStatus, hasValidCoords, STATUS_META } from './status.js';
 
 function createPinIcon(status, isSelected = false) {
-  const meta = STATUS_META[status] || STATUS_META.none;
+  const meta = STATUS_META[status] || STATUS_META.to_deliver;
   const size = isSelected ? 36 : 28;
   const height = isSelected ? 44 : 36;
 
