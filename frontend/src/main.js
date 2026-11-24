@@ -3,7 +3,8 @@ import { fetchGyms } from './api.js';
 import { getConfig, isLiveConfigReady } from './config.js';
 import { createGymMap } from './map.js';
 import { initSettingsModal, initUnmappedModal, showToast } from './modals.js';
-import { getGymStatus, hasValidCoords, matchesFilter, STATUS, STATUS_META } from './status.js';
+import { initGymSheet } from './sheet.js';
+import { getGymStatus, hasValidCoords, matchesFilter, STATUS } from './status.js';
 
 const state = {
   gyms: [],
@@ -25,12 +26,25 @@ const summaryCounterEl = document.getElementById('summary-counter');
 const mockBadgeEl = document.getElementById('mock-badge');
 const filterChips = Array.from(document.querySelectorAll('.chip[data-filter]'));
 
-const sheetEl = document.getElementById('gym-sheet');
-const sheetBackdrop = document.getElementById('sheet-backdrop');
-
 const gymMap = createGymMap('map', {
-  onSelectGym: (gym) => openGymPreview(gym),
-  onMapClick: () => closeGymPreview()
+  onSelectGym: (gym) => selectGym(gym),
+  onMapClick: () => gymSheet.close()
+});
+
+const gymSheet = initGymSheet({
+  onClose: () => {
+    state.selectedRowIndex = null;
+    gymMap.setSelected(null, { pan: false });
+  },
+  onSaved: (updatedGym) => {
+    const idx = state.gyms.findIndex((g) => g.rowIndex === updatedGym.rowIndex);
+    if (idx !== -1) {
+      state.gyms[idx] = updatedGym;
+    } else {
+      state.gyms.push(updatedGym);
+    }
+    renderAll({ fitBounds: false });
+  }
 });
 
 const settingsModal = initSettingsModal({
@@ -41,10 +55,16 @@ const settingsModal = initSettingsModal({
 });
 
 const unmappedModal = initUnmappedModal({
-  onSelectGym: (gym) => openGymPreview(gym)
+  onSelectGym: (gym) => selectGym(gym)
 });
 
-/* ---------- Rendering ---------- */
+/* ---------- Selection & Rendering ---------- */
+
+function selectGym(gym) {
+  state.selectedRowIndex = gym.rowIndex;
+  gymMap.setSelected(gym.rowIndex, { pan: hasValidCoords(gym) });
+  gymSheet.open(gym);
+}
 
 function updateModeBadge() {
   const cfg = getConfig();
@@ -57,119 +77,14 @@ function renderAll({ fitBounds = false } = {}) {
 
   gymMap.renderGyms(filtered, { fitBounds });
 
-  // Summary counter reflects total gyms (or filtered if searching)
   const totalCount = state.gyms.length;
   const deliveredCount = state.gyms.filter((g) => getGymStatus(g) === STATUS.DELIVERED).length;
   summaryCounterEl.textContent = `${deliveredCount}/${totalCount} livrées`;
 
-  // Unmapped gyms badge
   const totalUnmapped = state.gyms.filter((g) => !hasValidCoords(g));
   unmappedCountEl.textContent = String(totalUnmapped.length);
   unmappedBtn.classList.toggle('hidden', totalUnmapped.length === 0);
   unmappedModal.render(unmapped.length > 0 ? unmapped : totalUnmapped);
-}
-
-/* ---------- Step 2 Preview Sheet (upgraded to full quick-edit sheet in Step 3) ---------- */
-
-function openGymPreview(gym) {
-  state.selectedRowIndex = gym.rowIndex;
-  gymMap.setSelected(gym.rowIndex, { pan: hasValidCoords(gym) });
-
-  const status = getGymStatus(gym);
-  const meta = STATUS_META[status];
-  const navQuery = hasValidCoords(gym)
-    ? `${gym.Lat},${gym.Lng}`
-    : encodeURIComponent(gym['Adresse'] || gym['NOM'] || '');
-  const navUrl = `https://www.google.com/maps/search/?api=1&query=${navQuery}`;
-
-  sheetEl.innerHTML = '';
-
-  const handle = document.createElement('div');
-  handle.className = 'sheet-handle';
-
-  const header = document.createElement('div');
-  header.className = 'sheet-header';
-
-  const titleWrap = document.createElement('div');
-  const title = document.createElement('h2');
-  title.className = 'sheet-title';
-  title.textContent = gym['NOM'] || `Salle #${gym.rowIndex}`;
-
-  const badge = document.createElement('span');
-  badge.className = 'status-badge';
-  badge.style.backgroundColor = meta.badgeBg;
-  badge.style.color = meta.badgeText;
-  badge.style.marginTop = '6px';
-  badge.textContent = meta.label;
-
-  titleWrap.appendChild(title);
-  titleWrap.appendChild(badge);
-
-  const closeBtn = document.createElement('button');
-  closeBtn.type = 'button';
-  closeBtn.className = 'icon-btn-sm';
-  closeBtn.setAttribute('aria-label', 'Fermer');
-  closeBtn.textContent = '×';
-  closeBtn.addEventListener('click', closeGymPreview);
-
-  header.appendChild(titleWrap);
-  header.appendChild(closeBtn);
-
-  const addr = document.createElement('p');
-  addr.className = 'sheet-address';
-  addr.textContent = gym['Adresse'] || gym['Localisation'] || 'Adresse non renseignée';
-
-  const grid = document.createElement('div');
-  grid.className = 'sheet-meta-grid';
-
-  const fields = [
-    ['Déposées par', gym['Déposées en salle par'] || '—'],
-    ['Affiches', gym["Nombre d'affiches"] !== '' && gym["Nombre d'affiches"] !== undefined ? `${gym["Nombre d'affiches"]} (${gym['Format'] || '—'})` : '—'],
-    ['Accord', gym['Accord'] || '—'],
-    ['Places offertes', gym['Nombre de places offertes'] !== '' && gym['Nombre de places offertes'] !== undefined ? gym['Nombre de places offertes'] : '—']
-  ];
-
-  for (const [label, value] of fields) {
-    const card = document.createElement('div');
-    card.className = 'sheet-meta-card';
-    const small = document.createElement('small');
-    small.textContent = label;
-    const strong = document.createElement('strong');
-    strong.textContent = String(value);
-    card.appendChild(small);
-    card.appendChild(strong);
-    grid.appendChild(card);
-  }
-
-  const navLink = document.createElement('a');
-  navLink.className = 'btn btn-primary';
-  navLink.style.width = '100%';
-  navLink.href = navUrl;
-  navLink.target = '_blank';
-  navLink.rel = 'noopener noreferrer';
-  navLink.textContent = 'Ouvrir dans Google Maps';
-
-  sheetEl.appendChild(handle);
-  sheetEl.appendChild(header);
-  sheetEl.appendChild(addr);
-  sheetEl.appendChild(grid);
-  sheetEl.appendChild(navLink);
-
-  sheetBackdrop.classList.remove('hidden');
-  sheetEl.classList.remove('hidden');
-  requestAnimationFrame(() => sheetEl.classList.add('open'));
-}
-
-function closeGymPreview() {
-  state.selectedRowIndex = null;
-  gymMap.setSelected(null, { pan: false });
-  sheetEl.classList.remove('open');
-  sheetBackdrop.classList.add('hidden');
-  setTimeout(() => {
-    if (!sheetEl.classList.contains('open')) {
-      sheetEl.classList.add('hidden');
-    }
-  }, 240);
 }
 
 /* ---------- Data Loading ---------- */
@@ -239,7 +154,6 @@ for (const chip of filterChips) {
 refreshBtn.addEventListener('click', () => loadGyms({ fitBounds: false }));
 settingsBtn.addEventListener('click', () => settingsModal.open());
 unmappedBtn.addEventListener('click', () => unmappedModal.open());
-sheetBackdrop.addEventListener('click', closeGymPreview);
 
 locateBtn.addEventListener('click', async () => {
   locateBtn.classList.add('is-loading');
