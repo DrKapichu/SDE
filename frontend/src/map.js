@@ -38,11 +38,13 @@ export function createGymMap(containerId, { onSelectGym, onMapClick }) {
   map.attributionControl.setPrefix(false);
 
   const markersLayer = L.layerGroup().addTo(map);
+  const routeLayer = L.layerGroup().addTo(map);
   const markersByRow = new Map();
   let selectedRowIndex = null;
   let hasFittedOnce = false;
   let userLocationMarker = null;
   let userAccuracyCircle = null;
+  let lastUserCoords = null;
 
   map.on('click', () => {
     if (onMapClick) onMapClick();
@@ -109,14 +111,45 @@ export function createGymMap(containerId, { onSelectGym, onMapClick }) {
 
       if (pan) {
         const latLng = curr.marker.getLatLng();
-        // Slight vertical offset so the pin remains visible above the mobile bottom sheet
         const targetZoom = Math.max(map.getZoom(), 13);
         map.setView(latLng, targetZoom, { animate: true });
       }
     }
   }
 
-  function locateUser() {
+  function drawRoute(latLngs) {
+    routeLayer.clearLayers();
+    if (!latLngs || latLngs.length === 0) return;
+
+    // White casing + blue route line for crisp legibility over OSM roads
+    L.polyline(latLngs, {
+      color: '#ffffff',
+      weight: 9,
+      opacity: 0.9,
+      lineCap: 'round',
+      lineJoin: 'round'
+    }).addTo(routeLayer);
+
+    const routeLine = L.polyline(latLngs, {
+      color: '#2563eb',
+      weight: 5,
+      opacity: 0.95,
+      lineCap: 'round',
+      lineJoin: 'round'
+    }).addTo(routeLayer);
+
+    map.fitBounds(routeLine.getBounds(), {
+      paddingTopLeft: [32, 130],
+      paddingBottomRight: [32, 160],
+      maxZoom: 16
+    });
+  }
+
+  function clearRoute() {
+    routeLayer.clearLayers();
+  }
+
+  function locateUser({ fly = true } = {}) {
     return new Promise((resolve, reject) => {
       if (!navigator.geolocation) {
         reject(new Error('Géolocalisation non supportée par ce navigateur.'));
@@ -127,6 +160,7 @@ export function createGymMap(containerId, { onSelectGym, onMapClick }) {
         (pos) => {
           const { latitude, longitude, accuracy } = pos.coords;
           const latLng = [latitude, longitude];
+          lastUserCoords = { lat: latitude, lng: longitude };
 
           if (userAccuracyCircle) {
             userAccuracyCircle.setLatLng(latLng).setRadius(Math.min(accuracy, 500));
@@ -155,7 +189,9 @@ export function createGymMap(containerId, { onSelectGym, onMapClick }) {
             }).addTo(map);
           }
 
-          map.flyTo(latLng, Math.max(map.getZoom(), 13), { duration: 0.7 });
+          if (fly) {
+            map.flyTo(latLng, Math.max(map.getZoom(), 13), { duration: 0.7 });
+          }
           resolve({ lat: latitude, lng: longitude, accuracy });
         },
         (err) => {
@@ -176,10 +212,17 @@ export function createGymMap(containerId, { onSelectGym, onMapClick }) {
     });
   }
 
+  function getLastUserCoords() {
+    return lastUserCoords;
+  }
+
   return {
     map,
     renderGyms,
     setSelected,
-    locateUser
+    drawRoute,
+    clearRoute,
+    locateUser,
+    getLastUserCoords
   };
 }

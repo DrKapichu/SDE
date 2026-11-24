@@ -33,7 +33,7 @@ function buildNavUrl(gym) {
   return `https://www.google.com/maps/search/?api=1&query=${query}`;
 }
 
-export function initGymSheet({ onClose, onSaved }) {
+export function initGymSheet({ onClose, onSaved, onRoute }) {
   const sheetEl = document.getElementById('gym-sheet');
   const backdropEl = document.getElementById('sheet-backdrop');
 
@@ -75,6 +75,7 @@ export function initGymSheet({ onClose, onSaved }) {
     const mail = String(gym['Mail'] || '').trim();
     const navUrl = buildNavUrl(gym);
     const quickName = cfg.userName || 'Moi';
+    const canRoute = hasValidCoords(gym);
 
     const postersVal = gym["Nombre d'affiches"] === '' || gym["Nombre d'affiches"] === null || gym["Nombre d'affiches"] === undefined
       ? ''
@@ -93,7 +94,7 @@ export function initGymSheet({ onClose, onSaved }) {
             <span id="sheet-status-badge" class="status-badge" style="background:${meta.badgeBg};color:${meta.badgeText}">
               ${escapeHtml(meta.label)}
             </span>
-            ${!hasValidCoords(gym) ? '<span class="status-badge badge-warn">Non géolocalisée</span>' : ''}
+            ${!canRoute ? '<span class="status-badge badge-warn">Non géolocalisée</span>' : ''}
           </div>
         </div>
         <button id="sheet-close-btn" type="button" class="icon-btn-sm" aria-label="Fermer">&times;</button>
@@ -102,11 +103,21 @@ export function initGymSheet({ onClose, onSaved }) {
       <p class="sheet-address">${escapeHtml(gym['Adresse'] || gym['Localisation'] || 'Adresse non renseignée')}</p>
 
       <div class="quick-actions-row">
-        <a class="action-pill action-pill-primary" href="${navUrl}" target="_blank" rel="noopener noreferrer">
+        ${canRoute ? `
+          <button id="sheet-route-btn" type="button" class="action-pill action-pill-primary">
+            <svg class="pill-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="6" cy="19" r="3"/>
+              <path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/>
+              <circle cx="18" cy="5" r="3"/>
+            </svg>
+            Itinéraire
+          </button>
+        ` : ''}
+        <a class="action-pill${canRoute ? '' : ' action-pill-primary'}" href="${navUrl}" target="_blank" rel="noopener noreferrer">
           <svg class="pill-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polygon points="3 11 22 2 13 21 11 13 3 11" stroke-linejoin="round"/>
           </svg>
-          Navigate
+          Google Maps
         </a>
         ${mail ? `
           <a class="action-pill" href="mailto:${escapeHtml(mail)}">
@@ -247,6 +258,7 @@ export function initGymSheet({ onClose, onSaved }) {
 
   function bindFormInteractions(gym) {
     const closeBtn = document.getElementById('sheet-close-btn');
+    const routeBtn = document.getElementById('sheet-route-btn');
     const form = document.getElementById('gym-edit-form');
     const deliveredByInput = document.getElementById('edit-delivered-by');
     const postersInput = document.getElementById('edit-posters');
@@ -257,6 +269,14 @@ export function initGymSheet({ onClose, onSaved }) {
     const btnLabel = saveBtn.querySelector('.btn-label');
 
     closeBtn.addEventListener('click', close);
+
+    if (routeBtn) {
+      routeBtn.addEventListener('click', () => {
+        const targetGym = { ...gym };
+        close();
+        if (onRoute) onRoute(targetGym);
+      });
+    }
 
     // Live status badge update as delivery fields change
     function refreshLiveStatusBadge() {

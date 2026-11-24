@@ -87,7 +87,28 @@
       <!-- Mode badge (shown only in mock mode) -->
       <div id="mock-badge" class="mock-badge hidden">MOCK MODE</div>
 
-      <!-- Bottom sheet container (populated in Step 3; preview in Step 2) -->
+      <!-- Floating in-app route banner -->
+      <div id="route-banner" class="route-banner hidden" role="region" aria-label="Itinéraire en cours">
+        <div class="route-banner-top">
+          <div class="route-banner-info">
+            <strong id="route-dest-name">Destination</strong>
+            <span id="route-meta">Calcul en cours…</span>
+          </div>
+          <button id="route-close-btn" class="icon-btn-sm" type="button" aria-label="Fermer l'itinéraire">&times;</button>
+        </div>
+        <div class="route-banner-bottom">
+          <div class="route-modes" role="tablist" aria-label="Mode de transport">
+            <button class="route-mode-btn active" data-mode="car" type="button">🚗 Voiture</button>
+            <button class="route-mode-btn" data-mode="bike" type="button">🚲 Vélo</button>
+            <button class="route-mode-btn" data-mode="foot" type="button">🚶 Pied</button>
+          </div>
+          <a id="route-gmaps-link" class="route-gmaps-link" href="#" target="_blank" rel="noopener noreferrer">
+            Maps ↗
+          </a>
+        </div>
+      </div>
+
+      <!-- Bottom sheet container -->
       <div id="sheet-backdrop" class="backdrop hidden" aria-hidden="true"></div>
       <aside id="gym-sheet" class="bottom-sheet hidden" role="dialog" aria-modal="true" aria-label="Détails de la salle"></aside>
 

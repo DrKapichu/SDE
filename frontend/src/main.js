@@ -3,6 +3,7 @@ import { fetchGyms } from './api.js';
 import { getConfig, isLiveConfigReady } from './config.js';
 import { createGymMap } from './map.js';
 import { initSettingsModal, initUnmappedModal, showToast } from './modals.js';
+import { fetchRoute, formatDistance, formatDuration } from './routing.js';
 import { initGymSheet } from './sheet.js';
 import { getGymStatus, hasValidCoords, matchesFilter, STATUS } from './status.js';
 
@@ -11,10 +12,12 @@ const state = {
   filter: 'all',
   search: '',
   selectedRowIndex: null,
-  loading: false
+  loading: false,
+  activeRoute: null // { gym, mode }
 };
 
 // DOM references
+const appEl = document.getElementById('app');
 const searchInput = document.getElementById('search-input');
 const clearSearchBtn = document.getElementById('clear-search-btn');
 const refreshBtn = document.getElementById('refresh-btn');
@@ -25,6 +28,14 @@ const unmappedCountEl = document.getElementById('unmapped-count');
 const summaryCounterEl = document.getElementById('summary-counter');
 const mockBadgeEl = document.getElementById('mock-badge');
 const filterChips = Array.from(document.querySelectorAll('.chip[data-filter]'));
+
+// Route banner DOM references
+const routeBannerEl = document.getElementById('route-banner');
+const routeDestNameEl = document.getElementById('route-dest-name');
+const routeMetaEl = document.getElementById('route-meta');
+const routeCloseBtn = document.getElementById('route-close-btn');
+const routeGmapsLink = document.getElementById('route-gmaps-link');
+const routeModeBtns = Array.from(document.querySelectorAll('.route-mode-btn[data-mode]'));
 
 const gymMap = createGymMap('map', {
   onSelectGym: (gym) => selectGym(gym),
@@ -44,6 +55,10 @@ const gymSheet = initGymSheet({
       state.gyms.push(updatedGym);
     }
     renderAll({ fitBounds: false });
+  },
+  onRoute: (gym) => {
+    const mode = state.activeRoute?.mode || 'car';
+    showRouteToGym(gym, mode);
   }
 });
 
@@ -85,6 +100,51 @@ function renderAll({ fitBounds = false } = {}) {
   unmappedCountEl.textContent = String(totalUnmapped.length);
   unmappedBtn.classList.toggle('hidden', totalUnmapped.length === 0);
   unmappedModal.render(unmapped.length > 0 ? unmapped : totalUnmapped);
+}
+
+/* ---------- In-App Routing ---------- */
+
+async function showRouteToGym(gym, mode = 'car') {
+  if (!hasValidCoords(gym)) {
+    showToast('Coordonnées GPS manquantes pour cette salle.', 'error');
+    return;
+  }
+
+  state.activeRoute = { gym, mode };
+  routeDestNameEl.textContent = gym['NOM'] || `Salle #${gym.rowIndex}`;
+  routeMetaEl.textContent = 'Localisation & calcul de l’itinéraire…';
+  routeGmapsLink.href = `https://www.google.com/maps/dir/?api=1&destination=${gym.Lat},${gym.Lng}&travelmode=${mode === 'bike' ? 'bicycling' : mode === 'foot' ? 'walking' : 'driving'}`;
+
+  for (const btn of routeModeBtns) {
+    btn.classList.toggle('active', btn.dataset.mode === mode);
+  }
+
+  routeBannerEl.classList.remove('hidden');
+  appEl.classList.add('has-route-banner');
+
+  try {
+    const origin = await gymMap.locateUser({ fly: false });
+    const dest = { lat: Number(gym.Lat), lng: Number(gym.Lng) };
+    const route = await fetchRoute(origin, dest, mode);
+
+    // Ensure user hasn't cancelled or switched route while awaiting
+    if (!state.activeRoute || state.activeRoute.gym.rowIndex !== gym.rowIndex || state.activeRoute.mode !== mode) {
+      return;
+    }
+
+    gymMap.drawRoute(route.coordinates);
+    routeMetaEl.textContent = `${formatDuration(route.durationSeconds)} • ${formatDistance(route.distanceMeters)}`;
+  } catch (err) {
+    routeMetaEl.textContent = err.message || 'Impossible de calculer l’itinéraire.';
+    showToast(err.message || 'Impossible de calculer l’itinéraire.', 'error', 4000);
+  }
+}
+
+function clearActiveRoute() {
+  state.activeRoute = null;
+  gymMap.clearRoute();
+  routeBannerEl.classList.add('hidden');
+  appEl.classList.remove('has-route-banner');
 }
 
 /* ---------- Data Loading ---------- */
@@ -151,6 +211,15 @@ for (const chip of filterChips) {
   });
 }
 
+for (const btn of routeModeBtns) {
+  btn.addEventListener('click', () => {
+    if (!state.activeRoute) return;
+    showRouteToGym(state.activeRoute.gym, btn.dataset.mode);
+  });
+}
+
+routeCloseBtn.addEventListener('click', clearActiveRoute);
+
 refreshBtn.addEventListener('click', () => loadGyms({ fitBounds: false }));
 settingsBtn.addEventListener('click', () => settingsModal.open());
 unmappedBtn.addEventListener('click', () => unmappedModal.open());
@@ -158,7 +227,7 @@ unmappedBtn.addEventListener('click', () => unmappedModal.open());
 locateBtn.addEventListener('click', async () => {
   locateBtn.classList.add('is-loading');
   try {
-    await gymMap.locateUser();
+    await gymMap.locateUser({ fly: true });
   } catch (err) {
     showToast(err.message, 'error');
   } finally {
