@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#0f172a" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <title>Affiches Salles d'Escalade</title>
+  </head>
+  <body>
+    <div id="app">
+      <!-- Full-screen Leaflet map -->
+      <div id="map" aria-label="Carte des salles d'escalade"></div>
+
+      <!-- Compact floating top bar -->
+      <header class="top-bar" role="banner">
+        <div class="top-bar-row">
+          <div class="search-wrap">
+            <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <circle cx="11" cy="11" r="7" />
+              <path d="m20 20-3.5-3.5" stroke-linecap="round" />
+            </svg>
+            <input
+              id="search-input"
+              type="search"
+              placeholder="Rechercher une salle ou ville…"
+              autocomplete="off"
+              autocorrect="off"
+              spellcheck="false"
+              aria-label="Rechercher par nom ou localisation"
+            />
+            <button id="clear-search-btn" class="icon-btn-sm hidden" type="button" aria-label="Effacer la recherche">
+              &times;
+            </button>
+          </div>
+
+          <button id="refresh-btn" class="icon-btn" type="button" aria-label="Actualiser les données" title="Actualiser">
+            <svg class="icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 12a9 9 0 1 1-2.64-6.36" stroke-linecap="round" />
+              <path d="M21 3v6h-6" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
+
+          <button id="settings-btn" class="icon-btn" type="button" aria-label="Paramètres" title="Paramètres">
+            <svg class="icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            </svg>
+          </button>
+        </div>
+
+        <div class="chips-row" role="tablist" aria-label="Filtrer par statut">
+          <button class="chip active" data-filter="all" type="button">All</button>
+          <button class="chip" data-filter="ready" type="button">
+            <span class="dot dot-blue"></span>To Deliver
+          </button>
+          <button class="chip" data-filter="delivered" type="button">
+            <span class="dot dot-green"></span>Delivered
+          </button>
+          <button class="chip" data-filter="pending" type="button">
+            <span class="dot dot-orange"></span>Pending
+          </button>
+          <span id="summary-counter" class="summary-pill" aria-live="polite">0/0 livrées</span>
+        </div>
+      </header>
+
+      <!-- Floating action buttons (bottom-right) -->
+      <div class="fab-stack">
+        <button id="unmapped-btn" class="fab fab-warning hidden" type="button" aria-label="Salles non géolocalisées">
+          <svg class="icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+            <line x1="12" y1="9" x2="12" y2="13" />
+            <line x1="12" y1="17" x2="12.01" y2="17" />
+          </svg>
+          <span id="unmapped-count" class="fab-badge">0</span>
+        </button>
+
+        <button id="locate-btn" class="fab" type="button" aria-label="Me localiser" title="Me localiser">
+          <svg class="icon-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M12 2v3M12 19v3M2 12h3M19 12h3" stroke-linecap="round" />
+            <circle cx="12" cy="12" r="7" />
+          </svg>
+        </button>
+      </div>
+
+      <!-- Mode badge (shown only in mock mode) -->
+      <div id="mock-badge" class="mock-badge hidden">MOCK MODE</div>
+
+      <!-- Bottom sheet container (populated in Step 3; preview in Step 2) -->
+      <div id="sheet-backdrop" class="backdrop hidden" aria-hidden="true"></div>
+      <aside id="gym-sheet" class="bottom-sheet hidden" role="dialog" aria-modal="true" aria-label="Détails de la salle"></aside>
+
+      <!-- Unmapped gyms modal -->
+      <div id="unmapped-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="unmapped-modal-title">
+        <div class="modal-card">
+          <div class="modal-header">
+            <h2 id="unmapped-modal-title">Salles non géolocalisées</h2>
+            <button id="close-unmapped-btn" class="icon-btn-sm" type="button" aria-label="Fermer">&times;</button>
+          </div>
+          <p class="modal-subtitle">Ces salles n'ont pas encore de coordonnées GPS valides. Touchez une salle pour la consulter ou corriger son adresse.</p>
+          <ul id="unmapped-list" class="unmapped-list"></ul>
+        </div>
+      </div>
+
+      <!-- Settings / API Config modal -->
+      <div id="settings-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
+        <div class="modal-card">
+          <div class="modal-header">
+            <h2 id="settings-modal-title">Configuration</h2>
+            <button id="close-settings-btn" class="icon-btn-sm" type="button" aria-label="Fermer">&times;</button>
+          </div>
+          <form id="settings-form" class="settings-form">
+            <label class="field">
+              <span>Google Apps Script URL</span>
+              <input id="cfg-api-url" type="url" placeholder="https://script.google.com/macros/s/.../exec" />
+            </label>
+            <label class="field">
+              <span>API Token</span>
+              <input id="cfg-api-token" type="password" placeholder="Votre API_TOKEN" autocomplete="off" />
+            </label>
+            <label class="field">
+              <span>Votre nom (pré-remplissage livraison)</span>
+              <input id="cfg-user-name" type="text" placeholder="Ex: Alex" />
+            </label>
+            <label class="checkbox-field">
+              <input id="cfg-use-mock" type="checkbox" />
+              <span>Utiliser les données de test (Mock mode)</span>
+            </label>
+            <div class="modal-actions">
+              <button id="reset-settings-btn" class="btn btn-secondary" type="button">Réinitialiser</button>
+              <button class="btn btn-primary" type="submit">Enregistrer &amp; Charger</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- Toast container -->
+      <div id="toast-container" class="toast-container" aria-live="polite"></div>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
