@@ -3,24 +3,34 @@
  *
  * Bound to the Google Sheet containing climbing gym delivery tracking data.
  * Exposes:
- *   - doGet(e):  Returns all gyms as JSON, auto-geocoding missing Lat/Lng rows
- *                and caching coordinates back into the sheet.
- *   - doPost(e): Updates specific fields for a given rowIndex (with a NOM
- *                safety check to prevent overwriting shifted rows).
+ *   - doGet(e):
+ *       * Default: Returns all gyms as JSON, auto-geocoding missing Lat/Lng rows
+ *         and caching coordinates back into the sheet.
+ *       * ?action=photo&fileId=...: Proxies a private Drive photo from the
+ *         configured photo folder as a base64 dataUrl (protected by API_TOKEN).
+ *   - doPost(e):
+ *       * Default: Updates specific fields for a given rowIndex (with a NOM
+ *         safety check to prevent overwriting shifted rows).
+ *       * action="uploadPhoto": Saves a compressed photo to the private Drive
+ *         folder (<NOM>_<timestamp>.jpg) and appends its Drive URL to the row's
+ *         Photo cell.
  *
  * Required Script Property:
  *   - API_TOKEN : Shared secret validated on every GET and POST request.
  *
- * Optional Script Property:
- *   - SHEET_NAME : Exact tab name to read/write (defaults to the first sheet).
+ * Optional Script Properties:
+ *   - SHEET_NAME      : Exact tab name to read/write (defaults to the first sheet).
+ *   - DRIVE_FOLDER_ID : Existing Google Drive folder ID for photos (auto-created if unset).
  */
 
 var CONFIG = {
   LAT_HEADER: 'Lat',
   LNG_HEADER: 'Lng',
+  PHOTO_HEADER: 'Photo',
   NOM_HEADER: 'NOM',
   ADDRESS_HEADER: 'Adresse',
   LOCALISATION_HEADER: 'Localisation',
+  DEFAULT_PHOTO_FOLDER_NAME: 'SDE - Photos Affiches',
   // Keep geocoding well within Apps Script's execution time & rate limits
   MAX_GEOCODE_PER_REQUEST: 25,
   MAX_GEOCODE_MS: 20000,
@@ -39,14 +49,15 @@ var CONFIG = {
     'Format',
     'Nombre de places offertes',
     'Lat',
-    'Lng'
+    'Lng',
+    'Photo'
   ]
 };
 
 /**
- * HTTP GET handler: returns all gyms and geocodes any missing coordinates.
- * Query params:
- *   - token (required): must match Script Property API_TOKEN
+ * HTTP GET handler:
+ *   - ?token=...                            -> returns all gyms + auto-geocodes missing Lat/Lng
+ *   - ?token=...&action=photo&fileId=...    -> returns private Drive photo as base64 dataUrl
  */
 function doGet(e) {
   try {
@@ -55,8 +66,12 @@ function doGet(e) {
       return jsonResponse_({ ok: false, status: 401, error: 'Unauthorized: invalid or missing token.' });
     }
 
+    if (params.action === 'photo') {
+      return handleGetPhoto_(params.fileId);
+    }
+
     var sheet = getTargetSheet_();
-    var headerInfo = ensureGeoColumns_(sheet);
+    var headerInfo = ensureRequiredColumns_(sheet);
     var headers = headerInfo.headers;
     var colMap = headerInfo.colMap;
 
@@ -150,18 +165,9 @@ function doGet(e) {
 }
 
 /**
- * HTTP POST handler: updates fields for a single gym row.
- * Expects JSON body sent as Content-Type: text/plain;charset=utf-8 (to avoid CORS preflight):
- * {
- *   "token": "...",
- *   "rowIndex": 5,
- *   "expectedNom": "Arkose Nation",
- *   "updates": {
- *     "Déposées en salle par": "Alex",
- *     "Nombre d'affiches": 5,
- *     ...
- *   }
- * }
+ * HTTP POST handler:
+ *   - Default: updates fields for a single gym row.
+ *   - action === "uploadPhoto": saves a photo to the private Drive folder and appends its link to Photo.
  */
 function doPost(e) {
   var lock = LockService.getScriptLock();
@@ -186,17 +192,12 @@ function doPost(e) {
       return jsonResponse_({ ok: false, status: 400, error: 'Invalid rowIndex.' });
     }
 
-    var updates = payload.updates;
-    if (!updates || typeof updates !== 'object') {
-      return jsonResponse_({ ok: false, status: 400, error: 'Missing updates object.' });
-    }
-
-    if (!lock.tryLock(10000)) {
+    if (!lock.tryLock(15000)) {
       return jsonResponse_({ ok: false, status: 503, error: 'Sheet is busy, please retry.' });
     }
 
     var sheet = getTargetSheet_();
-    var headerInfo = ensureGeoColumns_(sheet);
+    var headerInfo = ensureRequiredColumns_(sheet);
     var headers = headerInfo.headers;
     var colMap = headerInfo.colMap;
 
@@ -226,6 +227,19 @@ function doPost(e) {
           error: 'Row mismatch: expected "' + expectedNom + '" at row ' + rowIndex + ', found "' + actualNom + '". Please refresh.'
         });
       }
+    }
+
+    var tz = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone();
+
+    // Branch 1: Upload proof-of-delivery photo to private Drive folder
+    if (payload.action === 'uploadPhoto') {
+      return handleUploadPhoto_(sheet, headers, colMap, currentRow, rowIndex, tz, payload.photo);
+    }
+
+    // Branch 2: Standard field update
+    var updates = payload.updates;
+    if (!updates || typeof updates !== 'object') {
+      return jsonResponse_({ ok: false, status: 400, error: 'Missing updates object.' });
     }
 
     var addressChanged = false;
@@ -263,7 +277,6 @@ function doPost(e) {
     sheet.getRange(rowIndex, 1, 1, numCols).setValues([currentRow]);
     SpreadsheetApp.flush();
 
-    var tz = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone();
     var updatedRecord = rowToRecord_(headers, currentRow, rowIndex, tz);
 
     return jsonResponse_({
@@ -285,16 +298,139 @@ function doPost(e) {
 }
 
 /**
- * Utility: run manually once from the Apps Script editor to verify permissions,
- * ensure Lat/Lng columns exist, and check whether API_TOKEN is configured.
+ * Utility: run manually once from the Apps Script editor to verify permissions
+ * (Sheets + Drive + UrlFetch), ensure Lat/Lng/Photo columns exist, and check API_TOKEN.
  */
 function initializeSheet() {
   var sheet = getTargetSheet_();
-  var headerInfo = ensureGeoColumns_(sheet);
+  var headerInfo = ensureRequiredColumns_(sheet);
+  var folder = getOrCreatePhotoFolder_();
   var token = PropertiesService.getScriptProperties().getProperty('API_TOKEN');
   Logger.log('Sheet: ' + sheet.getName());
   Logger.log('Headers (' + headerInfo.headers.length + '): ' + headerInfo.headers.join(', '));
-  Logger.log('API_TOKEN configured: ' + Boolean(token));
+  Logger.log('Photo folder (private): ' + folder.getName() + ' (ID: ' + folder.getId() + ')');
+  Logger.log('API_TOKEN configured: ' + Boolean(token && token.trim()));
+}
+
+/* ============================================================================
+ * Photo Handlers (Private Google Drive)
+ * ========================================================================== */
+
+function handleGetPhoto_(fileId) {
+  if (!fileId || !/^[a-zA-Z0-9_-]{10,}$/.test(String(fileId).trim())) {
+    return jsonResponse_({ ok: false, status: 400, error: 'Invalid fileId.' });
+  }
+
+  var folder = getOrCreatePhotoFolder_();
+  var folderId = folder.getId();
+  var file;
+
+  try {
+    file = DriveApp.getFileById(String(fileId).trim());
+  } catch (e) {
+    return jsonResponse_({ ok: false, status: 404, error: 'Photo introuvable.' });
+  }
+
+  // Security check: only allow serving files stored inside our dedicated photo folder
+  var parents = file.getParents();
+  var inPhotoFolder = false;
+  while (parents.hasNext()) {
+    if (parents.next().getId() === folderId) {
+      inPhotoFolder = true;
+      break;
+    }
+  }
+  if (!inPhotoFolder) {
+    return jsonResponse_({ ok: false, status: 403, error: 'Access denied: file is outside the photo folder.' });
+  }
+
+  var blob = file.getBlob();
+  var mimeType = blob.getContentType() || 'image/jpeg';
+  var base64 = Utilities.base64Encode(blob.getBytes());
+
+  return jsonResponse_({
+    ok: true,
+    fileId: file.getId(),
+    name: file.getName(),
+    mimeType: mimeType,
+    dataUrl: 'data:' + mimeType + ';base64,' + base64
+  });
+}
+
+function handleUploadPhoto_(sheet, headers, colMap, currentRow, rowIndex, tz, photo) {
+  if (!photo || !photo.base64) {
+    return jsonResponse_({ ok: false, status: 400, error: 'Missing photo base64 data.' });
+  }
+
+  var mimeType = photo.mimeType || 'image/jpeg';
+  var ext = mimeType === 'image/png' ? 'png' : mimeType === 'image/webp' ? 'webp' : 'jpg';
+
+  var nomColIdx = colMap[CONFIG.NOM_HEADER];
+  var rawNom = nomColIdx !== undefined ? String(currentRow[nomColIdx] || '').trim() : 'Salle_' + rowIndex;
+  var safeNom = rawNom
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .substring(0, 60) || ('Salle_' + rowIndex);
+
+  var timestamp = Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd_HHmmss');
+  var fileName = safeNom + '_' + timestamp + '.' + ext;
+
+  var bytes = Utilities.base64Decode(photo.base64);
+  var blob = Utilities.newBlob(bytes, mimeType, fileName);
+
+  // Saved in private Drive folder (inherits private permissions; not shared publicly)
+  var folder = getOrCreatePhotoFolder_();
+  var file = folder.createFile(blob);
+  var fileId = file.getId();
+  var fileUrl = 'https://drive.google.com/file/d/' + fileId + '/view';
+
+  var photoColIdx = colMap[CONFIG.PHOTO_HEADER];
+  var existing = String(currentRow[photoColIdx] || '').trim();
+  currentRow[photoColIdx] = existing ? (existing + '\n' + fileUrl) : fileUrl;
+
+  sheet.getRange(rowIndex, 1, 1, headers.length).setValues([currentRow]);
+  SpreadsheetApp.flush();
+
+  var updatedRecord = rowToRecord_(headers, currentRow, rowIndex, tz);
+
+  return jsonResponse_({
+    ok: true,
+    gym: updatedRecord,
+    photo: {
+      fileId: fileId,
+      name: fileName,
+      url: fileUrl
+    }
+  });
+}
+
+function getOrCreatePhotoFolder_() {
+  var props = PropertiesService.getScriptProperties();
+  var savedId = props.getProperty('DRIVE_FOLDER_ID');
+
+  if (savedId && savedId.trim()) {
+    try {
+      var existing = DriveApp.getFolderById(savedId.trim());
+      if (!existing.isTrashed()) {
+        return existing;
+      }
+    } catch (e) {
+      // Folder deleted or inaccessible; fall through to find/create
+    }
+  }
+
+  var folders = DriveApp.getFoldersByName(CONFIG.DEFAULT_PHOTO_FOLDER_NAME);
+  var folder;
+  if (folders.hasNext()) {
+    folder = folders.next();
+  } else {
+    folder = DriveApp.createFolder(CONFIG.DEFAULT_PHOTO_FOLDER_NAME);
+  }
+
+  props.setProperty('DRIVE_FOLDER_ID', folder.getId());
+  return folder;
 }
 
 /* ============================================================================
@@ -323,9 +459,9 @@ function isValidToken_(providedToken) {
 }
 
 /**
- * Reads row 1 headers and appends Lat / Lng columns if missing.
+ * Reads row 1 headers and appends Lat, Lng, and Photo columns if missing.
  */
-function ensureGeoColumns_(sheet) {
+function ensureRequiredColumns_(sheet) {
   var lastCol = Math.max(sheet.getLastColumn(), 1);
   var rawHeaders = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
   var headers = rawHeaders.map(function (h) {
@@ -337,12 +473,12 @@ function ensureGeoColumns_(sheet) {
     headers.pop();
   }
 
+  var required = [CONFIG.LAT_HEADER, CONFIG.LNG_HEADER, CONFIG.PHOTO_HEADER];
   var toAppend = [];
-  if (headers.indexOf(CONFIG.LAT_HEADER) === -1) {
-    toAppend.push(CONFIG.LAT_HEADER);
-  }
-  if (headers.indexOf(CONFIG.LNG_HEADER) === -1) {
-    toAppend.push(CONFIG.LNG_HEADER);
+  for (var r = 0; r < required.length; r++) {
+    if (headers.indexOf(required[r]) === -1) {
+      toAppend.push(required[r]);
+    }
   }
 
   if (toAppend.length > 0) {

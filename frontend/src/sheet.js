@@ -1,6 +1,7 @@
-import { updateGym } from './api.js';
+import { fetchPhotoDataUrl, parsePhotoLinks, updateGym, uploadGymPhoto } from './api.js';
 import { getConfig, saveConfig } from './config.js';
 import { showToast } from './modals.js';
+import { compressImageFile } from './photo.js';
 import { getGymStatus, hasValidCoords, STATUS_META } from './status.js';
 
 const FORMAT_PRESETS = ['A3', 'A4', 'A3 + A4'];
@@ -37,12 +38,37 @@ export function initGymSheet({ onClose, onSaved, onRoute }) {
   const sheetEl = document.getElementById('gym-sheet');
   const backdropEl = document.getElementById('sheet-backdrop');
 
+  // Lightbox elements
+  const lightboxEl = document.getElementById('photo-lightbox');
+  const lightboxImg = document.getElementById('lightbox-img');
+  const lightboxCaption = document.getElementById('lightbox-caption');
+  const lightboxCloseBtn = document.getElementById('lightbox-close-btn');
+
   let currentGym = null;
   let isSaving = false;
+  let isUploadingPhoto = false;
+  let openRenderToken = 0;
+
+  function openLightbox(dataUrl, caption) {
+    lightboxImg.src = dataUrl;
+    lightboxCaption.textContent = caption || 'Photo';
+    lightboxEl.classList.remove('hidden');
+  }
+
+  function closeLightbox() {
+    lightboxEl.classList.add('hidden');
+    lightboxImg.removeAttribute('src');
+  }
+
+  lightboxCloseBtn.addEventListener('click', closeLightbox);
+  lightboxEl.addEventListener('click', (e) => {
+    if (e.target === lightboxEl) closeLightbox();
+  });
 
   function close() {
-    if (isSaving) return;
+    if (isSaving || isUploadingPhoto) return;
     currentGym = null;
+    openRenderToken++;
     sheetEl.classList.remove('open');
     backdropEl.classList.add('hidden');
     if (onClose) onClose();
@@ -55,19 +81,26 @@ export function initGymSheet({ onClose, onSaved, onRoute }) {
 
   backdropEl.addEventListener('click', close);
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && currentGym) close();
+    if (e.key === 'Escape') {
+      if (!lightboxEl.classList.contains('hidden')) {
+        closeLightbox();
+      } else if (currentGym) {
+        close();
+      }
+    }
   });
 
   function open(gym) {
     currentGym = { ...gym };
-    render(currentGym);
+    openRenderToken++;
+    render(currentGym, openRenderToken);
     backdropEl.classList.remove('hidden');
     sheetEl.classList.remove('hidden');
     sheetEl.scrollTop = 0;
     requestAnimationFrame(() => sheetEl.classList.add('open'));
   }
 
-  function render(gym) {
+  function render(gym, renderToken) {
     const cfg = getConfig();
     const status = getGymStatus(gym);
     const meta = STATUS_META[status];
@@ -222,6 +255,27 @@ export function initGymSheet({ onClose, onSaved, onRoute }) {
           </div>
         </div>
 
+        <!-- Proof of delivery photos (stored privately in Drive, viewed through Web App) -->
+        <div class="photo-section">
+          <div class="photo-section-header">
+            <span class="form-label">Photos (preuve de dépôt)</span>
+            <span id="photo-count-label" class="photo-count"></span>
+          </div>
+
+          <div class="photo-actions">
+            <label class="photo-upload-btn" id="camera-upload-label">
+              <input id="photo-camera-input" type="file" accept="image/*" capture="environment" class="sr-only" />
+              <span>📷 Prendre une photo</span>
+            </label>
+            <label class="photo-upload-btn photo-upload-secondary" id="gallery-upload-label">
+              <input id="photo-gallery-input" type="file" accept="image/*" class="sr-only" />
+              <span>🖼️ Galerie</span>
+            </label>
+          </div>
+
+          <div id="photo-grid" class="photo-grid"></div>
+        </div>
+
         <details class="other-info-details">
           <summary>Autres infos (Contact, Mail, Adresse, Localisation)</summary>
           <div class="other-info-body">
@@ -253,10 +307,50 @@ export function initGymSheet({ onClose, onSaved, onRoute }) {
       </form>
     `;
 
-    bindFormInteractions(gym);
+    bindFormInteractions(gym, renderToken);
+    renderPhotoGallery(gym['Photo'], renderToken);
   }
 
-  function bindFormInteractions(gym) {
+  function renderPhotoGallery(photoCell, renderToken) {
+    const grid = document.getElementById('photo-grid');
+    const countLabel = document.getElementById('photo-count-label');
+    if (!grid) return;
+
+    const links = parsePhotoLinks(photoCell);
+    countLabel.textContent = links.length > 0 ? `${links.length} photo${links.length > 1 ? 's' : ''}` : 'Aucune photo';
+    grid.innerHTML = '';
+
+    if (links.length === 0) return;
+
+    links.forEach((entry, index) => {
+      const tile = document.createElement('button');
+      tile.type = 'button';
+      tile.className = 'photo-thumb photo-thumb-loading';
+      tile.setAttribute('aria-label', `Voir la photo ${index + 1}`);
+      tile.innerHTML = '<span class="photo-thumb-status">…</span>';
+      grid.appendChild(tile);
+
+      fetchPhotoDataUrl(entry)
+        .then(({ dataUrl, name }) => {
+          if (renderToken !== openRenderToken) return;
+          tile.classList.remove('photo-thumb-loading');
+          tile.innerHTML = '';
+          const img = document.createElement('img');
+          img.src = dataUrl;
+          img.alt = name || `Photo ${index + 1}`;
+          tile.appendChild(img);
+          tile.addEventListener('click', () => openLightbox(dataUrl, name || `Photo ${index + 1}`));
+        })
+        .catch(() => {
+          if (renderToken !== openRenderToken) return;
+          tile.classList.remove('photo-thumb-loading');
+          tile.classList.add('photo-thumb-error');
+          tile.innerHTML = '<span class="photo-thumb-status">Erreur</span>';
+        });
+    });
+  }
+
+  function bindFormInteractions(gym, renderToken) {
     const closeBtn = document.getElementById('sheet-close-btn');
     const routeBtn = document.getElementById('sheet-route-btn');
     const form = document.getElementById('gym-edit-form');
@@ -268,6 +362,11 @@ export function initGymSheet({ onClose, onSaved, onRoute }) {
     const spinner = saveBtn.querySelector('.btn-spinner');
     const btnLabel = saveBtn.querySelector('.btn-label');
 
+    const cameraInput = document.getElementById('photo-camera-input');
+    const galleryInput = document.getElementById('photo-gallery-input');
+    const cameraLabel = document.getElementById('camera-upload-label');
+    const galleryLabel = document.getElementById('gallery-upload-label');
+
     closeBtn.addEventListener('click', close);
 
     if (routeBtn) {
@@ -277,6 +376,48 @@ export function initGymSheet({ onClose, onSaved, onRoute }) {
         if (onRoute) onRoute(targetGym);
       });
     }
+
+    // Photo capture / gallery upload handler
+    async function handleFileSelection(inputEl) {
+      const file = inputEl.files && inputEl.files[0];
+      inputEl.value = '';
+      if (!file || isUploadingPhoto) return;
+
+      isUploadingPhoto = true;
+      cameraLabel.classList.add('is-uploading');
+      galleryLabel.classList.add('is-uploading');
+      cameraLabel.querySelector('span').textContent = '⏳ Envoi…';
+
+      try {
+        const compressed = await compressImageFile(file);
+        const { gym: updatedGym } = await uploadGymPhoto(gym.rowIndex, gym['NOM'], compressed);
+
+        // Update local reference & parent state without closing the sheet or losing unsaved edits
+        gym['Photo'] = updatedGym['Photo'];
+        if (currentGym && currentGym.rowIndex === updatedGym.rowIndex) {
+          currentGym['Photo'] = updatedGym['Photo'];
+        }
+        if (onSaved) onSaved(updatedGym);
+
+        renderPhotoGallery(updatedGym['Photo'], renderToken);
+        showToast('Photo ajoutée !', 'success');
+      } catch (err) {
+        const msg = !navigator.onLine
+          ? 'Hors ligne : impossible d’envoyer la photo.'
+          : err.message || 'Échec de l’envoi de la photo.';
+        showToast(msg, 'error', 4500);
+      } finally {
+        isUploadingPhoto = false;
+        cameraLabel.classList.remove('is-uploading');
+        galleryLabel.classList.remove('is-uploading');
+        if (cameraLabel.querySelector('span')) {
+          cameraLabel.querySelector('span').textContent = '📷 Prendre une photo';
+        }
+      }
+    }
+
+    cameraInput.addEventListener('change', () => handleFileSelection(cameraInput));
+    galleryInput.addEventListener('change', () => handleFileSelection(galleryInput));
 
     // Live status badge update as delivery fields change
     function refreshLiveStatusBadge() {
@@ -353,7 +494,7 @@ export function initGymSheet({ onClose, onSaved, onRoute }) {
     // Submit -> POST updates to Google Apps Script (or mock store)
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
-      if (isSaving) return;
+      if (isSaving || isUploadingPhoto) return;
 
       const formData = new FormData(form);
       const updates = {};
@@ -382,7 +523,6 @@ export function initGymSheet({ onClose, onSaved, onRoute }) {
         return;
       }
 
-      // Remember user's name if they filled "Déposées en salle par" and haven't set userName yet
       if (updates['Déposées en salle par'] && !getConfig().userName) {
         saveConfig({ userName: String(updates['Déposées en salle par']).trim() });
       }
